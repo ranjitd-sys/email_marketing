@@ -1,123 +1,214 @@
 import * as cheerio from "cheerio";
+import { saveCategory } from "./db";
 
-const url = "https://www.amazon.in/dp/B086374DS9";
+const BASE_URL = "https://www.amazon.in";
+const START_URL = `${BASE_URL}/gp/bestsellers/`;
 
-const response = await fetch(url);
-const html = await response.text();
-
-const $ = cheerio.load(html);
-
-
-const product = {
-  asin: "B086374DS9",
-
-  title: $("#productTitle")
-    .text()
-    .replace(/\s+/g, " ")
-    .trim(),
-
-  brand: $("#bylineInfo")
-    .text()
-    .replace(/\s+/g, " ")
-    .trim(),
-
-  price: $(".a-price .a-offscreen")
-    .first()
-    .text()
-    .trim(),
-
-  rating: $("#acrPopover")
-    .attr("title") ?? null,
-
-  reviewCount: $("#acrCustomerReviewText")
-    .text()
-    .trim(),
-
-  availability: $("#availability")
-    .text()
-    .replace(/\s+/g, " ")
-    .trim(),
-
-  features: $("#feature-bullets li")
-    .map((_, el) =>
-      $(el).text().replace(/\s+/g, " ").trim()
-    )
-    .get()
-    .filter(Boolean),
-
-  description: $("#productDescription")
-    .text()
-    .replace(/\s+/g, " ")
-    .trim(),
-
-  images: $("#altImages img")
-    .map((_, el) => $(el).attr("src"))
-    .get()
-    .filter(Boolean),
+type Category = {
+  name: string;
+  url: string;
+  parentUrl: string | null;
+  depth: number;
+  children: Category[];
 };
 
-// --------------------------------
-// PRODUCT DETAILS
-// --------------------------------
+const categories = new Map<string, Category>();
+const visited = new Set<string>();
 
-const productDetails: Record<string, string> = {};
+function normalizeUrl(href: string): string | null {
+  try {
+    const url = new URL(href, BASE_URL);
 
-$("tr").each((_, row) => {
-  const cells = $(row)
-    .find("th, td")
-    .map((_, cell) =>
-      $(cell).text().replace(/\s+/g, " ").trim()
-    )
-    .get();
-
-  if (cells.length === 2) {
-    const [key, value] = cells;
-
-    if (key && value) {
-      productDetails[key] = value;
+    // Only Amazon India
+    if (url.hostname !== "www.amazon.in") {
+      return null;
     }
+
+    // Only bestseller pages
+    if (!url.pathname.startsWith("/gp/bestsellers")) {
+      return null;
+    }
+
+    // Remove /ref=... from the path
+    const refIndex = url.pathname.indexOf("/ref=");
+
+    if (refIndex !== -1) {
+      url.pathname = url.pathname.slice(0, refIndex);
+    }
+
+    // Remove query/hash
+    url.search = "";
+    url.hash = "";
+
+    // Normalize trailing slash
+    if (!url.pathname.endsWith("/")) {
+      url.pathname += "/";
+    }
+
+    return url.href;
+  } catch {
+    return null;
   }
-});
+}
 
-// --------------------------------
-// SELLER
-// --------------------------------
+function extractCategories(
+  html: string,
+  currentUrl: string
+) {
+  const $ = cheerio.load(html);
 
-const seller = {
-  name:
-    $("#sellerProfileTriggerId")
+  const found = new Map<string, string>();
+
+  $("a[href]").each((_, element) => {
+    const href = $(element).attr("href");
+
+    if (!href) return;
+
+    const url = normalizeUrl(href);
+
+    if (!url) return;
+
+    if (url === currentUrl) return;
+
+    const name = $(element)
       .text()
       .replace(/\s+/g, " ")
-      .trim() || null,
+      .trim();
 
-  soldBy:
-    $("#merchantInfoFeature_feature_div")
-      .text()
-      .replace(/\s+/g, " ")
-      .trim() || null,
-};
+    if (!name) return;
 
-// --------------------------------
-// FIND PUBLIC EMAILS IN HTML
-// --------------------------------
+    found.set(url, name);
+  });
 
-const emails = [
-  ...html.matchAll(
-    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
-  ),
-].map(match => match[0].toLowerCase());
+  console.log("\nCATEGORY CANDIDATES:");
 
-const uniqueEmails = [...new Set(emails)];
+  for (const [url, name] of found) {
+    console.log(name, "=>", url);
+  }
 
+  return [...found].map(([url, name]) => ({
+    url,
+    name,
+  }));
+}
 
-const result = {
-  url,
-  product,
-  productDetails,
-  seller,
-  emails: uniqueEmails,
-};
+async function crawlCategory(
+  name: string,
+  url: string,
+  parent: Category | null,
+  depth: number,
+  parentId: number | null
+) {
+  if (visited.has(url)) {
+    return;
+  }
 
-console.log(
-  JSON.stringify(result, null, 2)
-);
+  visited.add(url);
+
+  console.log(
+    `${"  ".repeat(depth)}${name}`
+  );
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    console.log(
+      `${"  ".repeat(depth)}FAILED ${response.status}`
+    );
+    return;
+  }
+
+  const html = await response.text();
+
+  const current: Category = {
+    name,
+    url,
+    parentUrl: parent?.url ?? null,
+    depth,
+    children: [],
+  };
+
+  categories.set(url, current);
+
+  const children = extractCategories(
+    html,
+    url
+  );
+
+  for (const child of children) {
+    if (visited.has(child.url)) {
+      continue;
+    }
+
+    // SAVE CHILD HERE
+    const childId = await saveCategory(
+      child.name,
+      child.url,
+      parentId,
+      depth + 1
+    );
+
+    console.log(
+      `Saved: ${child.name}, id=${childId}`
+    );
+
+    const childCategory: Category = {
+      name: child.name,
+      url: child.url,
+      parentUrl: url,
+      depth: depth + 1,
+      children: [],
+    };
+
+    current.children.push(childCategory);
+
+    categories.set(
+      child.url,
+      childCategory
+    );
+
+    // NOW CRAWL THE CHILD
+    await crawlCategory(
+      child.name,
+      child.url,
+      current,
+      depth + 1,
+      childId
+    );
+  }
+}
+
+async function main() {
+  const rootId = await saveCategory(
+    "Any Department",
+    START_URL,
+    null,
+    0
+  );
+
+  await crawlCategory(
+    "Any Department",
+    START_URL,
+    null,
+    0,
+    rootId
+  );
+
+  console.log(
+    `Total categories: ${categories.size}`
+  );
+}
+
+main().catch(console.error);
+
+function printTree(category: Category) {
+  console.log(
+    `${"  ".repeat(category.depth)}${category.name}`
+  );
+
+  for (const child of category.children) {
+    printTree(child);
+  }
+}
+
+main().catch(console.error);
