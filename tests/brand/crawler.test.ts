@@ -265,7 +265,13 @@ describe("crawlBrandBatch", () => {
 
     expect(names).toContain("brands");
     expect(names).toContain("category_brands");
-    expect(names).not.toContain("products");
-    expect(names).not.toContain("sellers");
+
+    const [counts] = await db`
+      SELECT
+        (SELECT COUNT(*)::int FROM products) AS products,
+        (SELECT COUNT(*)::int FROM sellers) AS sellers
+    `;
+    expect(counts.products).toBe(0);
+    expect(counts.sellers).toBe(0);
   });
 });

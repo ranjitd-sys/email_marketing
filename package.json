@@ -6,6 +6,7 @@
   "scripts": {
     "category:crawl": "bun run src/main.ts",
     "brand:crawl": "bun run src/brand/main.ts",
+    "product-seller:crawl": "bun run src/product-seller/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
