@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "category:crawl": "bun run src/main.ts",
+    "brand:crawl": "bun run src/brand/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
@@ -15,6 +16,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "cheerio": "^1.2.0"
+    "cheerio": "^1.2.0",
+    "domhandler": "^5.0.3"
   }
 }
